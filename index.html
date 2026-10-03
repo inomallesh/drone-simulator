@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NextGen Drone Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Inter', sans-serif;
+            touch-action: none; /* Prevent scroll on touch devices */
+        }
+        
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Let touches pass through to canvas/joysticks */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .interactive {
+            pointer-events: auto;
+        }
+
+        /* Glassmorphism utility classes */
+        .glass-panel {
+            background: rgba(17, 24, 39, 0.4);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .glass-button {
+            background: rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+        }
+        
+        .glass-button.active {
+            background: rgba(6, 182, 212, 0.3); /* Cyan highlight */
+            border-color: rgba(6, 182, 212, 0.8);
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.4);
+            color: #22d3ee; /* Tailwind cyan-400 */
+        }
+
+        /* Joystick zones */
+        .joystick-zone {
+            position: absolute;
+            bottom: 2rem;
+            width: 150px;
+            height: 150px;
+            pointer-events: auto;
+        }
+        #zone-left { left: 2rem; }
+        #zone-right { right: 2rem; }
+    </style>
+
+    <!-- Setup Import Map for modern Three.js ES Modules -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="text-white">
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Modern UI Overlay -->
+    <div id="ui-layer" class="p-4 sm:p-6 pb-24">
+        
+        <!-- Top Bar -->
+        <div class="flex justify-between items-start w-full gap-4">
+            
+            <!-- Telemetry / Status panel -->
+            <div class="glass-panel rounded-2xl p-4 flex flex-col gap-2 min-w-[160px]">
+                <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <span class="text-xs font-semibold tracking-wider text-gray-300 uppercase">SYS CONNECTED</span>
+                </div>
+                <div class="text-2xl font-light tabular-nums tracking-tight" id="telemetry-alt">
+                    Alt: <span class="text-cyan-400 font-medium">1.2m</span>
+                </div>
+                <div class="text-xs text-gray-400 tabular-nums">
+                    BATT: <span class="text-green-400">94%</span> | SGNL: <span class="text-white">100%</span>
+                </div>
+            </div>
+
+            <!-- Mode Selector -->
+            <div class="glass-panel rounded-full p-1.5 flex gap-1 interactive">
+                <button onclick="setMode('ACRO')" id="btn-ACRO" class="glass-button px-5 py-2 rounded-full text-sm font-medium text-gray-400 hover:text-white">
+                    ACRO
+                </button>
+                <button onclick="setMode('BALANCED')" id="btn-BALANCED" class="glass-button active px-5 py-2 rounded-full text-sm font-medium text-gray-400 hover:text-white">
+                    BALANCED
+                </button>
+                <button onclick="setMode('GYRO')" id="btn-GYRO" class="glass-button px-5 py-2 rounded-full text-sm font-medium text-gray-400 hover:text-white">
+                    GYRO
+                </button>
+            </div>
+            
+            <!-- Contextual Action (e.g. settings/camera) -->
+            <div class="glass-panel rounded-2xl p-3 interactive cursor-pointer hover:bg-white/10 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-gray-300"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+            </div>
+        </div>
+
+        <!-- Center message (for gyro prompt) -->
+        <div id="gyro-prompt" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 glass-panel p-6 rounded-2xl text-center interactive hidden flex-col items-center gap-4">
+            <h3 class="text-lg font-bold">Gyroscope Permission Needed</h3>
+            <p class="text-sm text-gray-300 max-w-xs">Tap below to allow this app to read your device's orientation data.</p>
+            <button onclick="requestGyro()" class="bg-cyan-500 hover:bg-cyan-400 text-black font-bold py-2 px-6 rounded-full transition w-full shadow-[0_0_15px_rgba(6,182,212,0.5)]">
+                Enable Gyro
+            </button>
+        </div>
+    </div>
+
+    <!-- Joystick Zones -->
+    <div id="zone-left" class="joystick-zone"></div>
+    <div id="zone-right" class="joystick-zone"></div>
+
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- STATE & CONFIG ---
+        let currentMode = 'BALANCED';
+        let isGyroEnabled = false;
+        
+        // Input States (Normalized -1 to 1)
+        const inputs = {
+            pitch: 0, // Right stick Y
+            roll: 0,  // Right stick X
+            yaw: 0,   // Left stick X
+            throttle: 0 // Left stick Y
+        };
+
+        // Phone Gyro State
+        const gyroInput = {
+            pitch: 0,
+            roll: 0
+        };
+
+        // --- THREE.JS SETUP ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 3, 7); // Positioned slightly behind and above
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Optimize for mobile
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 5);
+        scene.add(dirLight);
+
+        // Environment (Grid)
+        const gridHelper = new THREE.GridHelper(100, 100, 0x06b6d4, 0x333333); // Cyan center line, dark gray grid
+        gridHelper.position.y = -1;
+        scene.add(gridHelper);
+
+        // --- DRONE CREATION & LOADING ---
+        const droneGroup = new THREE.Group();
+        scene.add(droneGroup);
+        let mixer; // AnimationMixer for the .glb
+
+        // Fallback procedural drone (used if GLTF fails to load)
+        const createFallbackDrone = () => {
+            const bodyGeo = new THREE.BoxGeometry(1, 0.2, 0.6);
+            const matDark = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+            const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 });
+            
+            const body = new THREE.Mesh(bodyGeo, matWhite);
+            droneGroup.add(body);
+
+            const armGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.8);
+            armGeo.rotateX(Math.PI / 2);
+            
+            // Add 4 arms and props
+            const positions = [[0.6, 0.5], [0.6, -0.5], [-0.6, 0.5], [-0.6, -0.5]];
+            positions.forEach(pos => {
+                const arm = new THREE.Mesh(armGeo, matDark);
+                arm.position.set(pos[0]/2, 0, pos[1]/2);
+                arm.lookAt(new THREE.Vector3(pos[0], 0, pos[1]));
+                droneGroup.add(arm);
+
+                const propGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.02);
+                const prop = new THREE.Mesh(propGeo, new THREE.MeshStandardMaterial({color: 0x06b6d4, transparent:true, opacity: 0.8}));
+                prop.position.set(pos[0], 0.1, pos[1]);
+                prop.userData.isProp = true; // Tag it to animate manually
+                droneGroup.add(prop);
+            });
+        };
+
+        // Attempt to load GLTF
+        const loader = new GLTFLoader();
+        // Replace 'drone.glb' with your actual file path or URL if available.
+        loader.load('animated_drone_with_camera_free.glb', function (gltf) {
+            console.log("Successfully loaded .glb drone!");
+            const model = gltf.scene;
+            
+            // Center the model
+            const box = new THREE.Box3().setFromObject(model);
+            const center = box.getCenter(new THREE.Vector3());
+            model.position.sub(center);
+            
+            droneGroup.add(model);
+
+            // Handle Animation (assuming gltf.animations[0] is propeller rotation)
+            if (gltf.animations && gltf.animations.length > 0) {
+                mixer = new THREE.AnimationMixer(model);
+                const action = mixer.clipAction(gltf.animations[0]);
+                action.play();
+            }
+
+        }, undefined, function (error) {
+            console.warn("Could not load drone.glb, using fallback 3D model instead. Place your file at the root or update the path.");
+            createFallbackDrone();
+        });
+
+
+        // --- VIRTUAL JOYSTICKS (Nipple.js) ---
+        const leftZone = document.getElementById('zone-left');
+        const rightZone = document.getElementById('zone-right');
+
+        const joystickOptions = {
+            mode: 'static',
+            position: { left: '50%', top: '50%' },
+            size: 120,
+            color: '#06b6d4',
+            restOpacity: 0.5
+        };
+
+        const managerLeft = nipplejs.create({ ...joystickOptions, zone: leftZone });
+        const managerRight = nipplejs.create({ ...joystickOptions, zone: rightZone });
+
+        // Left Stick: Throttle (Y) and Yaw (X)
+        managerLeft.on('move', (evt, data) => {
+            const force = Math.min(data.force, 1);
+            inputs.yaw = -Math.cos(data.angle.radian) * force;
+            inputs.throttle = Math.sin(data.angle.radian) * force;
+        });
+        managerLeft.on('end', () => {
+            inputs.yaw = 0;
+            inputs.throttle = 0; // Usually throttle stays, but auto-center for simplicity here
+        });
+
+        // Right Stick: Pitch (Y) and Roll (X)
+        managerRight.on('move', (evt, data) => {
+            const force = Math.min(data.force, 1);
+            inputs.roll = Math.cos(data.angle.radian) * force;
+            inputs.pitch = Math.sin(data.angle.radian) * force;
+        });
+        managerRight.on('end', () => {
+            inputs.roll = 0;
+            inputs.pitch = 0;
+        });
+
+        // --- GYROSCOPE LOGIC (Android/iOS) ---
+        window.handleOrientation = function(event) {
+            if (currentMode !== 'GYRO') return;
+
+            // Beta: Front/Back tilt [-180, 180] -> Pitch
+            // Gamma: Left/Right tilt [-90, 90] -> Roll
+            let beta = event.beta || 0;
+            let gamma = event.gamma || 0;
+
+            // Clamp and normalize for comfortable control
+            const maxTilt = 45; // Max 45 degrees
+            beta = Math.max(-maxTilt, Math.min(maxTilt, beta));
+            gamma = Math.max(-maxTilt, Math.min(maxTilt, gamma));
+
+            // Map to -1.0 to 1.0 range
+            gyroInput.pitch = -(beta / maxTilt);
+            gyroInput.roll = (gamma / maxTilt);
+        };
+
+        window.requestGyro = function() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission()
+                    .then(permissionState => {
+                        if (permissionState === 'granted') {
+                            window.addEventListener('deviceorientation', handleOrientation);
+                            document.getElementById('gyro-prompt').style.display = 'none';
+                            isGyroEnabled = true;
+                        } else {
+                            // User denied
+                            console.error("Gyro permission denied");
+                            setMode('BALANCED');
+                        }
+                    })
+                    .catch(console.error);
+            } else {
+                // Non iOS 13+ devices
+                window.addEventListener('deviceorientation', handleOrientation);
+                document.getElementById('gyro-prompt').style.display = 'none';
+                isGyroEnabled = true;
+            }
+        };
+
+
+        // --- UI LOGIC ---
+        window.setMode = function(mode) {
+            currentMode = mode;
+            
+            // Update active button styling
+            ['ACRO', 'BALANCED', 'GYRO'].forEach(m => {
+                const btn = document.getElementById(`btn-${m}`);
+                if(m === mode) btn.classList.add('active');
+                else btn.classList.remove('active');
+            });
+
+            // Handle Gyro Permissions
+            const prompt = document.getElementById('gyro-prompt');
+            if (mode === 'GYRO' && !isGyroEnabled) {
+                prompt.style.display = 'flex';
+            } else {
+                prompt.style.display = 'none';
+            }
+        };
+
+
+        // --- RENDER LOOP & FLIGHT PHYSICS ---
+        const clock = new THREE.Clock();
+        
+        // Drone Physics Variables
+        const velocity = new THREE.Vector3();
+        const maxTiltAngle = Math.PI / 4; // 45 degrees
+        const rotationSpeed = 2.5;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            // 1. Handle GLTF Animations
+            if (mixer) mixer.update(delta);
+
+            // Animate fallback propellers if used
+            if (!mixer) {
+                droneGroup.children.forEach(child => {
+                    if(child.userData.isProp) {
+                        // Spin faster based on throttle input
+                        const idleSpeed = 10;
+                        const thrustBoost = Math.abs(inputs.throttle) * 20;
+                        child.rotation.y += (idleSpeed + thrustBoost) * delta;
+                    }
+                });
+            }
+
+            // 2. Flight Mode Logic
+            
+            if (currentMode === 'BALANCED') {
+                // BALANCED: Sticks set target angle, drone auto-levels
+                const targetPitch = inputs.pitch * maxTiltAngle;
+                const targetRoll = -inputs.roll * maxTiltAngle;
+                
+                // Lerp towards target angle
+                droneGroup.rotation.x += (targetPitch - droneGroup.rotation.x) * 5 * delta;
+                droneGroup.rotation.z += (targetRoll - droneGroup.rotation.z) * 5 * delta;
+                droneGroup.rotation.y += inputs.yaw * rotationSpeed * delta;
+
+            } else if (currentMode === 'ACRO') {
+                // ACRO: Sticks apply continuous rotation (no auto-leveling)
+                droneGroup.rotation.x += inputs.pitch * rotationSpeed * delta;
+                droneGroup.rotation.z += -inputs.roll * rotationSpeed * delta;
+                droneGroup.rotation.y += inputs.yaw * rotationSpeed * delta;
+
+            } else if (currentMode === 'GYRO') {
+                // GYRO: Phone tilt sets target angle (similar to balanced, but different input)
+                const targetPitch = gyroInput.pitch * maxTiltAngle;
+                const targetRoll = -gyroInput.roll * maxTiltAngle;
+
+                droneGroup.rotation.x += (targetPitch - droneGroup.rotation.x) * 5 * delta;
+                droneGroup.rotation.z += (targetRoll - droneGroup.rotation.z) * 5 * delta;
+                droneGroup.rotation.y += inputs.yaw * rotationSpeed * delta; // Still use left stick for yaw
+            }
+
+            // 3. Movement (Translation)
+            // Simplified movement: Drone moves in the direction it is tilted
+            const forwardThrust = Math.sin(droneGroup.rotation.x) * 10 * delta;
+            const sideThrust = -Math.sin(droneGroup.rotation.z) * 10 * delta;
+            
+            // Move based on tilt and yaw orientation
+            droneGroup.translateZ(-forwardThrust);
+            droneGroup.translateX(sideThrust);
+            
+            // Vertical movement (throttle)
+            droneGroup.position.y += inputs.throttle * 5 * delta;
+
+            // Simple floor collision / hovering effect
+            if (droneGroup.position.y < 0) {
+                droneGroup.position.y = 0;
+            }
+
+            // 4. Update Camera to follow drone smoothly
+            const idealOffset = new THREE.Vector3(0, 2, 5); // Behind and above
+            idealOffset.applyQuaternion(droneGroup.quaternion);
+            idealOffset.add(droneGroup.position);
+            
+            camera.position.lerp(idealOffset, 0.1);
+            camera.lookAt(droneGroup.position);
+
+            // Update UI Telemetry
+            document.getElementById('telemetry-alt').innerHTML = `Alt: <span class="text-cyan-400 font-medium">${(droneGroup.position.y).toFixed(1)}m</span>`;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Window Resize
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Start Loop
+        animate();
+    </script>
+</body>
+</html>
